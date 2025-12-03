@@ -45,12 +45,66 @@ def sample_val(dist, rng):
     val = rng.normal(dist["mean"], dist["std"])
     return max(val, 1e-6)
 
+def describe_location(centroid, bbox_min, bbox_max):
+    """Translate 3D coordinates into natural language location."""
+    x, y, z = centroid
+    min_x, min_y, min_z = bbox_min
+    max_x, max_y, max_z = bbox_max
+    
+    # Normalize to 0-1 range
+    nx = (x - min_x) / (max_x - min_x)
+    ny = (y - min_y) / (max_y - min_y)
+    nz = (z - min_z) / (max_z - min_z)
+    
+    parts = []
+    
+    # Vertical (Z)
+    if nz > 0.8: parts.append("top")
+    elif nz < 0.2: parts.append("bottom")
+    
+    # Horizontal (X) - Assuming X is Left/Right
+    if nx > 0.7: parts.append("right")
+    elif nx < 0.3: parts.append("left")
+    
+    # Depth (Y) - Assuming Y is Front/Back
+    if ny > 0.7: parts.append("back")
+    elif ny < 0.3: parts.append("front")
+    
+    if not parts:
+        return "center"
+        
+    return " ".join(parts)
+
+def generate_description(defect_type, centroid, dims, bbox_min, bbox_max):
+    """Generate a full natural language sentence."""
+    loc_str = describe_location(centroid, bbox_min, bbox_max)
+    L, W, D = dims
+    
+    # Size adjectives
+    size_adj = "small"
+    if L > 10.0: size_adj = "large"
+    elif L > 5.0: size_adj = "medium"
+    
+    # Depth adjectives
+    depth_adj = "shallow"
+    if D > 0.5: depth_adj = "deep"
+    
+    # Clean up type name
+    type_name = defect_type.replace("_", " ")
+    
+    return f"A {size_adj}, {depth_adj} {type_name} located on the {loc_str} of the component."
+
 def generate(good_path, pattern_json, count, out_dir):
     print(f"Learning from {pattern_json}...")
     model = learn_model(pattern_json)
     rng = np.random.default_rng()
     
     base_mesh = ops.load_mesh(good_path)
+    
+    # Compute bbox for semantic translation
+    bbox = base_mesh.get_axis_aligned_bounding_box()
+    bbox_min = bbox.get_min_bound()
+    bbox_max = bbox.get_max_bound()
     
     Path(out_dir).mkdir(parents=True, exist_ok=True)
     
@@ -79,7 +133,10 @@ def generate(good_path, pattern_json, count, out_dir):
             v_idx = rng.integers(0, len(mesh.vertices))
             center = np.asarray(mesh.vertices)[v_idx]
             
-            if t == "scratch":
+            # Map type to operation
+            is_linear = t in ["scratch", "long_scratch", "crack"]
+            
+            if is_linear:
                 # Create a random path
                 n, t1, t2 = ops.local_tangent_basis(mesh, v_idx)
                 # Random direction in tangent plane
@@ -89,13 +146,17 @@ def generate(good_path, pattern_json, count, out_dir):
                 p1 = center + (dir_vec * L * 0.5)
                 mesh = ops.apply_scratch(mesh, [p0, p1], width=W, depth=D)
             else:
-                # Pit
+                # Pit / Gouge / Crack (non-linear)
                 mesh = ops.apply_pit(mesh, center, radius=max(L,W)/2, depth=D)
+            
+            # Generate natural language description
+            desc = generate_description(t, center, [L, W, D], bbox_min, bbox_max)
                 
             generated_defects.append({
                 "type": t,
                 "centroid": center.tolist(),
-                "LWD": [L, W, D]
+                "LWD": [L, W, D],
+                "description": desc
             })
             
         out_name = f"synth_{i:03d}.stl"

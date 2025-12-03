@@ -107,9 +107,24 @@ def analyze(good_path, bad_path, out_path, n_points=20000, alpha=0.005):
             dims = np.ptp(X @ eigvecs, axis=0) # range of projections
             L, W, H = sorted(dims)[::-1]
             
-            # Type guess
+            # Type guess logic
             aspect = L / (W + 1e-9)
-            dtype = "scratch" if aspect > 3.0 else "pit_or_chip"
+            max_depth = float(np.abs(depths).max())
+            
+            # Scale-relative thresholds (D is bbox diagonal)
+            is_large = L > (0.15 * D)  # >15% of part size
+            is_deep = max_depth > (0.02 * D) # >2% of part size
+            
+            if is_large and is_deep:
+                dtype = "crack" if aspect > 2.5 else "large_gouge"
+            elif aspect > 5.0:
+                dtype = "long_scratch"
+            elif aspect > 2.5:
+                dtype = "scratch"
+            elif is_deep:
+                dtype = "deep_pit"
+            else:
+                dtype = "surface_pit"
             
             defects.append({
                 "type_guess": dtype,
